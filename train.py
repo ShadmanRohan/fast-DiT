@@ -104,7 +104,7 @@ class CustomDataset(Dataset):
 
     def __len__(self):
         assert len(self.features_files) == len(self.labels_files), \
-            "Number of feature files and label files should be same"
+            "Number of feature files and label files should be the same"
         return len(self.features_files)
 
     def __getitem__(self, idx):
@@ -113,8 +113,14 @@ class CustomDataset(Dataset):
 
         features = np.load(os.path.join(self.features_dir, feature_file))
         labels = np.load(os.path.join(self.labels_dir, label_file))
-        return torch.from_numpy(features), torch.from_numpy(labels)
 
+        # Convert features and labels to tensors
+        features_tensor = torch.from_numpy(features)
+        
+        # Ensure labels are integers if they're used as indices in embedding layers
+        labels_tensor = torch.from_numpy(labels).long()  # Convert labels to long integers
+
+        return features_tensor, labels_tensor
 
 #################################################################################
 #                                  Training Loop                                #
@@ -195,8 +201,15 @@ def main(args):
         for x, y in loader:
             x = x.to(device)
             y = y.to(device)
+
+            #print(y.shape)
+
             x = x.squeeze(dim=1)
             y = y.squeeze(dim=1)
+            #y = y.squeeze(dim=0)
+            print(y.shape)
+            print(x.shape)
+
             t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)
             model_kwargs = dict(y=y)
             loss_dict = diffusion.training_losses(model, x, t, model_kwargs)
@@ -262,3 +275,4 @@ if __name__ == "__main__":
     parser.add_argument("--ckpt-every", type=int, default=50_000)
     args = parser.parse_args()
     main(args)
+
