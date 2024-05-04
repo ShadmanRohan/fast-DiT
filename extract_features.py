@@ -13,7 +13,7 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 from torchvision.datasets import ImageFolder
 from torchvision import transforms
@@ -35,6 +35,28 @@ from diffusers.models import AutoencoderKL
 #################################################################################
 #                             Training Helper Functions                         #
 #################################################################################
+
+class SpectrogramDataset(Dataset):
+    def __init__(self, spectrogram_dir, embedding_dir):
+        self.spectrogram_dir = spectrogram_dir
+        self.embedding_dir = embedding_dir
+        self.filenames = [f for f in os.listdir(spectrogram_dir) if f.endswith('.npy')]
+
+    def __len__(self):
+        return len(self.filenames)
+
+    def __getitem__(self, idx):
+        file_name = self.filenames[idx]
+        spectrogram_path = os.path.join(self.spectrogram_dir, file_name)
+        spectrogram = np.load(spectrogram_path)
+        embedding_path = os.path.join(self.embedding_dir, file_name)
+        embedding = np.load(embedding_path)
+
+        spectrogram_tensor = torch.tensor(spectrogram, dtype=torch.float32)
+        embedding_tensor = torch.tensor(embedding, dtype=torch.float32)
+
+        return spectrogram_tensor, embedding_tensor
+
 
 @torch.no_grad()
 def update_ema(ema_model, model, decay=0.9999):
@@ -141,7 +163,15 @@ def main(args):
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
     ])
-    dataset = ImageFolder(args.data_path, transform=transform)
+    #dataset = ImageFolder(args.data_path, transform=transform)
+
+    dataset = SpectrogramDataset(
+        spectrogram_dir=args.data_path + '/Spectrograms/',
+        embedding_dir=args.data_path + '/Embeddings/',
+        #transform=transform
+    )
+
+    print(args.data_path + '/Spectrograms')
     sampler = DistributedSampler(
         dataset,
         num_replicas=dist.get_world_size(),
@@ -163,6 +193,10 @@ def main(args):
     for x, y in loader:
         x = x.to(device)
         y = y.to(device)
+        print(x.shape)
+        print(y.shape)
+        x = x.permute(0, 3, 1, 2)  # Rearrange to [batch_size, channels, height, width]
+
         with torch.no_grad():
             # Map input images to latent space + normalize latents:
             x = vae.encode(x).latent_dist.sample().mul_(0.18215)
@@ -189,7 +223,7 @@ if __name__ == "__main__":
     parser.add_argument("--global-batch-size", type=int, default=256)
     parser.add_argument("--global-seed", type=int, default=0)
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
-    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--ckpt-every", type=int, default=50_000)
     args = parser.parse_args()
