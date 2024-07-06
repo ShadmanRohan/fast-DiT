@@ -67,6 +67,43 @@ class TimestepEmbedder(nn.Module):
 
 
 
+class LabelEmbedder(nn.Module):
+    """
+    Handles image embeddings and provides option for classifier-free guidance.
+    """
+    def __init__(self, embedding_dim, dropout_prob):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+        self.dropout_prob = dropout_prob
+        self.use_cfg = dropout_prob > 0
+        
+        if self.use_cfg:
+            self.cfg_embedding = nn.Parameter(torch.randn(embedding_dim))
+        else:
+            self.cfg_embedding = None
+
+    def token_drop(self, embeddings, force_drop_ids=None):
+        """
+        Replaces some embeddings with the CFG embedding to enable classifier-free guidance.
+        """
+        if force_drop_ids is None:
+            drop_mask = torch.rand(embeddings.shape[0], device=embeddings.device) < self.dropout_prob
+        else:
+            drop_mask = force_drop_ids == 1
+        
+        dropped_embeddings = torch.where(
+            drop_mask.unsqueeze(1),
+            self.cfg_embedding.unsqueeze(0).expand(embeddings.shape[0], -1),
+            embeddings
+        )
+        return dropped_embeddings
+
+    def forward(self, embeddings, train, force_drop_ids=None):
+        if self.use_cfg and ((train and self.dropout_prob > 0) or (force_drop_ids is not None)):
+            return self.token_drop(embeddings, force_drop_ids)
+        return embeddings
+
+
 
 #################################################################################
 #                                 Core DiT Model                                #
@@ -125,12 +162,12 @@ class DiT(nn.Module):
         input_size=32,
         patch_size=2,
         in_channels=4,
-        hidden_size=512,
+        hidden_size=384,
         depth=28,
         num_heads=16,
         mlp_ratio=4.0,
         class_dropout_prob=0.1,
-        num_classes=1000,
+        num_classes=0,
         learn_sigma=True,
     ):
         super().__init__()
@@ -144,7 +181,7 @@ class DiT(nn.Module):
         #self.t_embedder = TimestepEmbedder(hidden_size)
         self.t_embedder = TimestepEmbedder(hidden_size=384)
 
-        #self.y_embedder = LabelEmbedder(num_classes, hidden_size, class_dropout_prob)
+        self.y_embedder = LabelEmbedder(hidden_size, class_dropout_prob)
         num_patches = self.x_embedder.num_patches
         # Will use fixed sin-cos embedding:
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
@@ -217,16 +254,21 @@ class DiT(nn.Module):
         y: (N,) tensor of class labels
         """
         #print(x.shape)
-        #print(y.shape)
+        print("Before Embed")
+        print(y.shape)
+        print(t.shape)
         #print(t.shape)
 
         x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
         t = self.t_embedder(t)                   # (N, D)
-        #y = self.y_embedder(y, self.training)    # (N, D)
+        y = self.y_embedder(y, self.training)    # (N, D)
         #print('*'*12)
         #print(x.shape)
         #print(y.shape)
         #print(t.shape)
+        print("After Embed")
+        print(y.shape)
+        print(t.shape)
 
         c = t + y                                # (N, D)
         #c = y
